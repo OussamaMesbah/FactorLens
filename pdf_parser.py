@@ -17,7 +17,8 @@ import pdfplumber
 # ---------------------------------------------------------------------------
 
 ISIN_RE = re.compile(r'\b([A-Z]{2}[A-Z0-9]{10})\b')
-TICKER_RE = re.compile(r'\b([A-Z]{1,5})\b')  # crude; used only as hint
+# Look for common ticker patterns: 3-5 uppercase letters followed by " ETF" or in brackets
+TICKER_HINT_RE = re.compile(r'\b([A-Z]{3,5})\b(?:\s+ETF|\s+Fund|\)|\])')
 CURRENCY_RE = re.compile(r'\b(USD|EUR|GBP|CHF|JPY|CAD|AUD|SEK|NOK|DKK)\b')
 INCEPTION_RE = re.compile(
     r'(?:inception|launch|since)\s*(?:date)?\s*[:\-]?\s*'
@@ -107,11 +108,14 @@ STRATEGY_KEYWORDS: dict[str, list[str]] = {
 def extract_text(pdf_path: str | Path) -> str:
     """Extract all text from a PDF file using pdfplumber."""
     text_pages = []
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for page in pdf.pages:
-            txt = page.extract_text()
-            if txt:
-                text_pages.append(txt)
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page in pdf.pages:
+                txt = page.extract_text()
+                if txt:
+                    text_pages.append(txt)
+    except Exception as e:
+        print(f"Error reading PDF: {e}")
     return "\n".join(text_pages)
 
 
@@ -152,31 +156,33 @@ def _extract_fund_name(text: str, filename: str) -> str:
     """Heuristic: the fund name is usually in the first 5 lines."""
     lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 5][:10]
     for line in lines:
-        # Skip pure header lines (journal titles, dates, page numbers)
         if any(kw in line.lower() for kw in [
                 "volume", "february", "journal", "page", "the journal",
                 "theory", "practice"
         ]):
             continue
-        # Prefer lines that contain "fund" or look like a proper name
         if len(line) > 8:
             return line[:120]
-    # Fallback: use filename stem
     return Path(filename).stem.replace("_", " ").replace("-", " ").title()
 
 
 def _extract_isins(text: str) -> list[str]:
     return list(set(ISIN_RE.findall(text)))
 
+def _extract_ticker_hint(text: str) -> str:
+    hits = TICKER_HINT_RE.findall(text)
+    if hits:
+        # Return most common hit
+        from collections import Counter
+        return Counter(hits).most_common(1)[0][0]
+    return ""
 
 def _extract_benchmark(text: str) -> str:
     m = BENCHMARK_RE.search(text)
     if m:
         raw = m.group(1).strip()
-        # Clean up trailing garbage
         raw = re.sub(r'[\r\n].*', '', raw)
         return raw[:100]
-    # Common known benchmarks
     benchmarks = [
         "MSCI World", "S&P 500", "MSCI ACWI", "Bloomberg Aggregate",
         "Russell 1000", "FTSE All World", "Euro Stoxx 50"
@@ -202,7 +208,6 @@ def parse_factsheet(pdf_path: str | Path, filename: str = "") -> dict:
             "Could not extract text from PDF (may be scanned/image-only)."
         }
 
-    # Determine if this looks like a factsheet at all
     factsheet_signals = [
         "fund", "performance", "isin", "nav", "inception", "return",
         "benchmark", "sharpe", "net asset"
@@ -210,15 +215,12 @@ def parse_factsheet(pdf_path: str | Path, filename: str = "") -> dict:
     signal_hits = sum(1 for s in factsheet_signals if s in text_lower)
     is_factsheet = signal_hits >= 3
 
-    # Try extracting from the AQR paper specifically (demo PDF in repo)
-    is_aqr_paper = "superstar" in text_lower or "brooks" in text_lower and "aqr" in text_lower
-
     result: dict = {
         "is_factsheet": is_factsheet,
-        "is_demo_paper": is_aqr_paper,
         "raw_text_chars": len(text),
         "fund_name": "",
         "isins": [],
+        "ticker_hint": "",
         "currency": "USD",
         "asset_class": "equity",
         "geography": "Global",
@@ -230,34 +232,9 @@ def parse_factsheet(pdf_path: str | Path, filename: str = "") -> dict:
         "raw_excerpt": text[:2000],
     }
 
-    if is_aqr_paper:
-        result.update({
-            "fund_name":
-            "AQR Demo — Superstar Investors (Brooks, Tsuji, Villalon, 2019)",
-            "is_demo_paper":
-            True,
-            "asset_class":
-            "equity",
-            "geography":
-            "US",
-            "strategies": [
-                "Value", "Quality", "Momentum", "Low Volatility",
-                "Factor / Smart Beta"
-            ],
-            "benchmark":
-            "S&P 500 (SPY)",
-            "note":
-            ("This PDF is the AQR research paper 'Superstar Investors' (JOI 2019). "
-             "It describes how Berkshire Hathaway, PIMCO TRF, Quantum Fund, and "
-             "Magellan's returns can be explained by systematic factor exposures "
-             "(Value, Quality, Low-Risk, Momentum, Size, Market). "
-             "Please upload an actual fund factsheet to run the replication, "
-             "or use the demo mode below."),
-        })
-        return result
-
     result["fund_name"] = _extract_fund_name(text, filename)
     result["isins"] = _extract_isins(text)
+    result["ticker_hint"] = _extract_ticker_hint(text)
     result["asset_class"] = _infer_asset_class(text)
     result["geography"] = _infer_geography(text)
     result["strategies"] = _infer_strategies(text)
@@ -276,7 +253,6 @@ def parse_factsheet(pdf_path: str | Path, filename: str = "") -> dict:
     if aum_m:
         result["aum"] = aum_m.group(1).strip()
 
-    # Collect notable keywords for display
     notable = []
     for strategy, kws in STRATEGY_KEYWORDS.items():
         for kw in kws:
