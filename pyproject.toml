@@ -3,7 +3,7 @@ name = "portfolio-reconstruct"
 version = "0.1.0"
 description = "Factor-based portfolio replication of public funds — based on AQR's Superstar Investors paper"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 
 [project.scripts]
 start = "app:app"
