@@ -1,0 +1,533 @@
+{% extends "base.html" %}
+{% set d = data %}
+{% block title %}{{ d.fund_name }} — FactorLens Results{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-4" style="max-width:1400px;">
+
+    <!-- ===== HEADER ===== -->
+    <div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-3">
+        <div>
+            <div class="text-muted mb-1" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.07em;">
+                Factor Replication Analysis
+            </div>
+            <h2 class="fw-700 mb-1" style="font-weight:700;letter-spacing:-.02em;">
+                {{ d.fund_name }}
+            </h2>
+            <div class="d-flex gap-2 flex-wrap">
+                <span class="badge rounded-pill px-3"
+                    style="background:rgba(56,139,253,.15);color:#388BFD;border:1px solid rgba(56,139,253,.3);">
+                    <code style="font-size:.8rem;">{{ d.fund_ticker }}</code>
+                </span>
+                <span class="badge rounded-pill px-3"
+                    style="background:rgba(139,148,158,.1);color:var(--text-muted);border:1px solid var(--border);">
+                    {{ d.asset_class | title }}
+                </span>
+                <span class="badge rounded-pill px-3"
+                    style="background:rgba(139,148,158,.1);color:var(--text-muted);border:1px solid var(--border);">
+                    {{ d.period.start }} → {{ d.period.end }}
+                </span>
+                <span class="badge rounded-pill px-3"
+                    style="background:rgba(139,148,158,.1);color:var(--text-muted);border:1px solid var(--border);">
+                    {{ d.n_trading_days }} trading days · {{ d.n_rebalances }} rebalances
+                </span>
+            </div>
+        </div>
+        <a href="/" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left me-1"></i>New Analysis
+        </a>
+    </div>
+
+    <!-- ===== KPI TILES ===== -->
+    <div class="row g-3 mb-4">
+        {% set metrics = [
+        ("Fund Return", d.fund_metrics.ann_return, "%", "Annualised total return of the fund"),
+        ("Replication Return", d.repl_metrics.ann_return, "%", "Annualised return of the factor replica"),
+        ("Benchmark Return", d.bench_metrics.ann_return, "%", "Annualised return of the benchmark ETF"),
+        ("Fund Sharpe", d.fund_metrics.sharpe, "", "Risk-adjusted return (Sharpe ratio) of the fund"),
+        ("Replica Sharpe", d.repl_metrics.sharpe, "", "Risk-adjusted return of the factor replica"),
+        ("Fund Max Drawdown", d.fund_metrics.max_dd, "%", "Worst peak-to-trough loss of the fund"),
+        ("Replica Max DD", d.repl_metrics.max_dd, "%", "Worst peak-to-trough loss of the replica"),
+        ("R² (Factor Fit)", (d.full_ols.r_squared * 100) | round(1), "%",
+        "How much of the fund's return variance is explained by factors"),
+        ] %}
+        {% for label, val, unit, tip in metrics %}
+        <div class="col-6 col-md-3 col-xl-3">
+            <div class="metric-tile" title="{{ tip }}">
+                <div class="label">{{ label }}</div>
+                <div class="value
+          {% if val is not none and unit == '%' and 'drawdown' not in label.lower() and 'dd' not in label.lower() %}
+            {% if val > 0 %}positive{% elif val < -1 %}negative{% endif %}
+          {% elif val is not none and unit == '' and 'sharpe' in label.lower() %}
+            {% if val > 0.5 %}positive{% elif val < 0 %}negative{% endif %}
+          {% elif val is not none and ('drawdown' in label.lower() or 'dd' in label.lower()) %}
+            {% if val < -15 %}negative{% elif val > -5 %}positive{% endif %}
+          {% endif %}
+          ">
+                    {% if val is not none %}{{ val }}{{ unit }}{% else %}N/A{% endif %}
+                </div>
+                <div class="sub">{{ tip }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- ===== TABS ===== -->
+    <ul class="nav nav-tabs mb-3" id="mainTabs">
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-perf">
+                <i class="bi bi-graph-up me-1"></i>Performance
+            </a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-factors">
+                <i class="bi bi-sliders me-1"></i>Factor Model
+            </a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-rebal">
+                <i class="bi bi-arrow-left-right me-1"></i>Rebalancing Log
+            </a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-holdings">
+                <i class="bi bi-pie-chart me-1"></i>Current Portfolio
+            </a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ols">
+                <i class="bi bi-calculator me-1"></i>Regression Stats
+            </a></li>
+    </ul>
+
+    <div class="tab-content">
+
+        <!-- ===== TAB: PERFORMANCE ===== -->
+        <div class="tab-pane fade show active" id="tab-perf">
+            <div class="row g-3 mb-3">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header"><i class="bi bi-graph-up me-2"></i>Cumulative Performance (Base = 100)
+                        </div>
+                        <div class="card-body p-2">
+                            <div id="chart-performance" style="height:380px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-lg-6">
+                    <div class="card h-100">
+                        <div class="card-header"><i class="bi bi-arrow-down me-2"></i>Drawdown</div>
+                        <div class="card-body p-2">
+                            <div id="chart-drawdown" style="height:280px;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="card h-100">
+                        <div class="card-header"><i class="bi bi-link me-2"></i>252-Day Rolling Correlation</div>
+                        <div class="card-body p-2">
+                            <div id="chart-rolling-corr" style="height:280px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB: FACTORS ===== -->
+        <div class="tab-pane fade" id="tab-factors">
+            <div class="row g-3 mb-3">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header"><i class="bi bi-layers me-2"></i>Factor Weights Over Time (Quarterly
+                            Rebalancing)</div>
+                        <div class="card-body p-2">
+                            <div id="chart-factor-weights" style="height:380px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-lg-6">
+                    <div class="card h-100">
+                        <div class="card-header"><i class="bi bi-bar-chart-horizontal me-2"></i>Full-Sample Factor Betas
+                            (OLS)</div>
+                        <div class="card-body p-2">
+                            <div id="chart-factor-betas" style="height:320px;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="card h-100">
+                        <div class="card-header"><i class="bi bi-info-circle me-2"></i>What Each Factor Means</div>
+                        <div class="card-body p-3">
+                            <div class="section-title">Factor Encyclopedia</div>
+                            {% set factor_info = {
+                            "Market": ("SPY", "#4C9BE8", "Broad equity market exposure. A beta of 1.0 means the fund
+                            moves 1-for-1 with the market."),
+                            "Value": ("VLUE","#F4B942", "Long cheap / short expensive: B/P, E/P, CF/P ratios. Tilts
+                            toward undervalued companies."),
+                            "Size": ("IWM", "#E85D75", "Small-cap premium (SMB). Small companies have historically
+                            outperformed large-caps over long horizons."),
+                            "Momentum": ("MTUM","#8AC48E", "Trend-following within stocks: recent 12M winners continue
+                            winning (UMD — Up Minus Down)."),
+                            "Quality": ("QUAL","#B47AEA", "Quality Minus Junk (QMJ): profitable, low-leverage firms vs.
+                            unprofitable, highly-levered."),
+                            "LowVol": ("USMV","#5DD4C8", "Betting Against Beta (BAB): low-volatility stocks outperform
+                            on risk-adjusted basis."),
+                            "CoreBond": ("AGG", "#4C9BE8", "Core duration exposure to the US bond market."),
+                            "InvGrade": ("LQD", "#F4B942", "Credit spread on investment-grade corporate bonds."),
+                            "HighYield": ("HYG", "#E85D75", "High-yield (junk) credit spread — default risk premium."),
+                            "Treasury": ("IEF", "#8AC48E", "7-10yr interest rate duration."),
+                            "TIPS": ("TIP", "#B47AEA", "Real rate + inflation breakeven."),
+                            "ShortBond": ("SHY", "#5DD4C8", "Short 1-3yr duration — near-cash exposure."),
+                            } %}
+                            <div style="max-height:280px;overflow-y:auto;">
+                                {% for factor, (ticker, color, desc) in factor_info.items() %}
+                                {% if d.full_ols.betas.get(factor, 0) != 0 %}
+                                <div class="d-flex gap-2 mb-2 pb-2" style="border-bottom:1px solid var(--border);">
+                                    <div style="min-width:10px;max-width:3px;background:{{ color }};border-radius:2px;">
+                                    </div>
+                                    <div>
+                                        <div class="d-flex align-items-center gap-2 mb-1">
+                                            <strong style="font-size:.82rem;">{{ factor }}</strong>
+                                            <code style="font-size:.72rem;">{{ ticker }}</code>
+                                            <span style="font-size:.8rem;color:{{ color }};">
+                                                β = {{ d.full_ols.betas.get(factor, 0) | round(3) }}
+                                            </span>
+                                        </div>
+                                        <div class="text-muted" style="font-size:.77rem;line-height:1.5;">{{ desc }}
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB: REBALANCING LOG ===== -->
+        <div class="tab-pane fade" id="tab-rebal">
+            {% if d.rebalancing_events %}
+            <div class="text-muted mb-3" style="font-size:.82rem;">
+                <i class="bi bi-info-circle me-1"></i>
+                The replicating portfolio is rebalanced quarterly using a 252-day rolling OLS window.
+                At each date, constrained optimisation minimises tracking error subject to long-only,
+                weights-sum-to-1 constraints.
+                <strong class="positive">Green = Buy</strong> ·
+                <strong class="negative">Red = Sell</strong> ·
+                Grey = Hold
+            </div>
+
+            <!-- Rebalancing accordion -->
+            <div class="accordion" id="rebalAccordion" style="--bs-accordion-bg:var(--bg-card);
+             --bs-accordion-border-color:var(--border);--bs-accordion-color:var(--text-primary);">
+                {% for event in d.rebalancing_events | reverse %}
+                <div class="accordion-item"
+                    style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button {% if not loop.first %}collapsed{% endif %}" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#rebal-{{ loop.index }}" style="background:var(--bg-card);color:var(--text-primary);font-size:.85rem;
+                             box-shadow:none;border-radius:8px;">
+                            <span class="fw-600 me-3">{{ event.date }}</span>
+                            <div class="d-flex gap-1 flex-wrap">
+                                {% for h in event.holdings %}
+                                <span class="badge badge-{{ h.action | lower }}">
+                                    {{ h.action }} {{ h.ticker }} {{ h.weight }}%
+                                </span>
+                                {% endfor %}
+                            </div>
+                        </button>
+                    </h2>
+                    <div id="rebal-{{ loop.index }}"
+                        class="accordion-collapse collapse {% if loop.first %}show{% endif %}">
+                        <div class="accordion-body p-0">
+                            <table class="table table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Factor</th>
+                                        <th>ETF</th>
+                                        <th>Name</th>
+                                        <th class="text-end">Prev %</th>
+                                        <th class="text-end">New %</th>
+                                        <th class="text-end">Δ</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for h in event.holdings %}
+                                    <tr>
+                                        <td><strong>{{ h.factor }}</strong></td>
+                                        <td><code>{{ h.ticker }}</code></td>
+                                        <td class="text-muted">{{ h.name }}</td>
+                                        <td class="text-end text-muted">{{ h.prev_weight }}%</td>
+                                        <td class="text-end">{{ h.weight }}%</td>
+                                        <td class="text-end
+                        {% if h.delta > 0.5 %}positive{% elif h.delta < -0.5 %}negative{% endif %}">
+                                            {% if h.delta > 0 %}+{% endif %}{{ h.delta }}%
+                                        </td>
+                                        <td>
+                                            <span class="badge badge-{{ h.action | lower }}"
+                                                style="font-size:.72rem;">{{ h.action }}</span>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            {% else %}
+            <div class="text-center text-muted py-5">
+                <i class="bi bi-clock-history d-block mb-2" style="font-size:2rem;"></i>
+                Not enough data to generate rebalancing events.<br />
+                Try a longer date range (at least 2 years).
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- ===== TAB: CURRENT HOLDINGS ===== -->
+        <div class="tab-pane fade" id="tab-holdings">
+            {% if d.latest_holdings %}
+            <div class="row g-3">
+                <div class="col-lg-5">
+                    <div class="card h-100">
+                        <div class="card-header"><i class="bi bi-pie-chart me-2"></i>Latest Portfolio Allocation</div>
+                        <div class="card-body p-2">
+                            <div id="chart-holdings-pie" style="height:340px;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-7">
+                    <div class="card h-100">
+                        <div class="card-header"><i class="bi bi-table me-2"></i>Holdings Detail</div>
+                        <div class="card-body p-0">
+                            <table class="table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Factor</th>
+                                        <th>ETF</th>
+                                        <th>Name</th>
+                                        <th class="text-end">Weight</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for h in d.latest_holdings %}
+                                    <tr>
+                                        <td><strong>{{ h.factor }}</strong></td>
+                                        <td><code>{{ h.ticker }}</code></td>
+                                        <td>{{ h.name }}</td>
+                                        <td class="text-end fw-600">{{ h.weight }}%</td>
+                                        <td class="text-muted" style="font-size:.78rem;max-width:240px;">
+                                            {{ h.description }}
+                                            {% if h.aqr_context %}
+                                            <br /><span style="color:#8B949E;font-style:italic;">{{ h.aqr_context[:120]
+                                                }}</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="text-center text-muted py-5">No holdings data available.</div>
+            {% endif %}
+        </div>
+
+        <!-- ===== TAB: REGRESSION STATS ===== -->
+        <div class="tab-pane fade" id="tab-ols">
+            <div class="row g-3">
+                <div class="col-lg-5">
+                    <div class="card">
+                        <div class="card-header"><i class="bi bi-sigma me-2"></i>Full-Sample OLS Summary</div>
+                        <div class="card-body p-3">
+                            <div class="row mb-3">
+                                <div class="col-6">
+                                    <div class="metric-tile">
+                                        <div class="label">Alpha (Ann.)</div>
+                                        <div
+                                            class="value {% if d.full_ols.alpha > 0 %}positive{% elif d.full_ols.alpha < -1 %}negative{% endif %}">
+                                            {{ d.full_ols.alpha }}%
+                                        </div>
+                                        <div class="sub">Unexplained excess return</div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="metric-tile">
+                                        <div class="label">R²</div>
+                                        <div class="value">{{ (d.full_ols.r_squared * 100) | round(1) }}%</div>
+                                        <div class="sub">Variance explained</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="metric-tile mb-2">
+                                <div class="label">Adj. R²</div>
+                                <div class="value">{{ (d.full_ols.adj_r_squared * 100) | round(1) }}%</div>
+                            </div>
+                            <div class="text-muted mt-2" style="font-size:.78rem;line-height:1.6;">
+                                An R² above 80% means the fund's returns are largely driven by systematic factor
+                                exposures. A high alpha (>2% p.a.) with a low p-value suggests genuine active
+                                management skill — rare in practice.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-7">
+                    <div class="card">
+                        <div class="card-header"><i class="bi bi-table me-2"></i>Factor Coefficients</div>
+                        <div class="card-body p-0">
+                            <table class="table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Factor</th>
+                                        <th class="text-end">Beta</th>
+                                        <th class="text-end">t-stat</th>
+                                        <th class="text-end">p-value</th>
+                                        <th>Significance</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for factor, beta in d.full_ols.betas.items() %}
+                                    {% set t = d.full_ols.t_stats.get(factor, 0) %}
+                                    {% set p = d.full_ols.p_values.get(factor, 1) %}
+                                    <tr>
+                                        <td><strong>{{ factor }}</strong></td>
+                                        <td
+                                            class="text-end {% if beta > 0.05 %}positive{% elif beta < -0.05 %}negative{% endif %}">
+                                            {{ beta | round(4) }}
+                                        </td>
+                                        <td class="text-end">{{ t | round(3) }}</td>
+                                        <td class="text-end">{{ p | round(4) }}</td>
+                                        <td>
+                                            {% if p < 0.01 %} <span class="badge"
+                                                style="background:rgba(63,185,80,.18);color:#3FB950;">***
+                                                p&lt;0.01</span>
+                                                {% elif p < 0.05 %} <span class="badge"
+                                                    style="background:rgba(63,185,80,.1);color:#3FB950;">**
+                                                    p&lt;0.05</span>
+                                                    {% elif p < 0.10 %} <span class="badge"
+                                                        style="background:rgba(240,136,62,.1);color:#F0883E;">*
+                                                        p&lt;0.10</span>
+                                                        {% else %}
+                                                        <span class="badge"
+                                                            style="background:rgba(139,148,158,.1);color:var(--text-muted);">n.s.</span>
+                                                        {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AQR Paper Context -->
+            <div class="card mt-3">
+                <div class="card-header"><i class="bi bi-book me-2"></i>Context from "Superstar Investors" (Brooks,
+                    Tsuji &amp; Villalon, 2019)</div>
+                <div class="card-body p-3" style="font-size:.82rem;line-height:1.75;color:var(--text-muted);">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <strong style="color:var(--text-primary);">Berkshire Hathaway (Buffett)</strong><br />
+                            Dominated by Value (HML), Quality (QMJ), and Low-Risk (BAB) exposures. Berkshire's cheap
+                            insurance float essentially acts as leverage on these factors, amplifying returns without
+                            proportionally increasing risk — <em>"buy quality merchandise when it is marked down."</em>
+                        </div>
+                        <div class="col-md-6">
+                            <strong style="color:var(--text-primary);">PIMCO Total Return (Gross)</strong><br />
+                            Primarily explained by the bond market factor (duration) augmented by credit factor
+                            exposure.
+                            The AQR paper shows that Gross's famous duration timing added minimal value on average;
+                            the persistent credit exposure was the true driver of excess returns.
+                        </div>
+                        <div class="col-md-6">
+                            <strong style="color:var(--text-primary);">Quantum Fund (Soros)</strong><br />
+                            Strong Trend/Momentum factor across equities and currencies. Soros's market timing
+                            (dynamic beta) added positive alpha in some periods. The fund's high alpha beyond
+                            systematic factors is the hardest to replicate.
+                        </div>
+                        <div class="col-md-6">
+                            <strong style="color:var(--text-primary);">Magellan Fund (Lynch)</strong><br />
+                            Significant Size (small-cap), Momentum, and Market exposure. Part of Lynch's record
+                            came from taking more risk (higher beta) and harvesting the small-cap premium —
+                            not purely from stock selection, though alpha was notably positive.
+                        </div>
+                    </div>
+                    <hr style="border-color:var(--border);">
+                    <p class="mb-0">
+                        <strong style="color:var(--text-primary);">Key takeaway:</strong>
+                        Systematic factor exposures explain the majority of returns of even the world's most
+                        celebrated investors. The replicating portfolio you see here captures those systematic
+                        tilts using low-cost, liquid ETFs. Any residual <em>alpha</em> — the intercept in the
+                        regression — represents skill or genuinely unique insight beyond replicable factors.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /tab-content -->
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const DATA = {{ data | tojson }};
+
+    // ---- Render Plotly charts ----
+    function renderChart(id, jsonStr) {
+        if (!jsonStr || jsonStr === '{}') return;
+        try {
+            const spec = JSON.parse(jsonStr);
+            Plotly.newPlot(id, spec.data, spec.layout,
+                { responsive: true, displayModeBar: false });
+        } catch (e) {
+            console.error('Chart error for', id, e);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const charts = DATA.charts || {};
+        renderChart('chart-performance', charts.performance);
+        renderChart('chart-drawdown', charts.drawdown);
+        renderChart('chart-rolling-corr', charts.rolling_corr);
+        renderChart('chart-factor-weights', charts.factor_weights);
+        renderChart('chart-factor-betas', charts.factor_betas);
+
+        // Holdings pie chart
+        if (DATA.latest_holdings && DATA.latest_holdings.length > 0) {
+            const labels = DATA.latest_holdings.map(h => `${h.factor} (${h.ticker})`);
+            const values = DATA.latest_holdings.map(h => h.weight);
+            const colors = ['#4C9BE8', '#F4B942', '#E85D75', '#8AC48E', '#B47AEA',
+                '#5DD4C8', '#FF9F40', '#FF6384', '#36A2EB'];
+
+            Plotly.newPlot('chart-holdings-pie', [{
+                type: 'pie',
+                labels, values,
+                marker: { colors: colors.slice(0, labels.length) },
+                textinfo: 'label+percent',
+                textfont: { size: 11, color: '#E6EDF3' },
+                hole: 0.4,
+                hovertemplate: '<b>%{label}</b><br>%{value:.1f}%<extra></extra>',
+            }], {
+                template: 'plotly_dark',
+                paper_bgcolor: '#0F1117',
+                plot_bgcolor: '#0F1117',
+                font: { family: 'Inter, sans-serif', color: '#E6EDF3' },
+                showlegend: false,
+                margin: { t: 20, b: 20, l: 20, r: 20 },
+            }, { responsive: true, displayModeBar: false });
+        }
+
+        // Re-render charts when tabs are shown (Plotly needs visible container)
+        document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => {
+            tab.addEventListener('shown.bs.tab', () => {
+                document.querySelectorAll('.js-plotly-plot').forEach(el => Plotly.relayout(el, {}));
+            });
+        });
+    });
+</script>
+{% endblock %}

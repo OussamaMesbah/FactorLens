@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+{% block title %}FactorLens — Replicate Any Fund with Factor Investing{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:960px;">
+
+    <!-- Hero -->
+    <div class="text-center mb-5 pt-3">
+        <div class="mb-3">
+            <span class="badge rounded-pill px-3 py-2" style="background:rgba(56,139,253,.15);border:1px solid rgba(56,139,253,.35);
+                   color:#388BFD;font-size:.75rem;letter-spacing:.05em;">
+                Based on AQR / Brooks, Tsuji &amp; Villalon (2019)
+            </span>
+        </div>
+        <h1 class="fw-700 mb-2" style="font-size:2.2rem;letter-spacing:-.03em;font-weight:700;">
+            Replicate Any Fund with<br />
+            <span style="color:#388BFD;">Factor Investing</span>
+        </h1>
+        <p class="text-muted mb-0" style="max-width:560px;margin:auto;line-height:1.7;">
+            Upload a fund factsheet PDF, enter the ticker, and FactorLens will decompose
+            the fund's returns into systematic factor exposures — Value, Momentum, Quality,
+            Low-Risk, Size — then construct a fully investable replicating portfolio
+            using liquid ETFs.
+        </p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <div class="row g-4">
+
+        <!-- ---- LEFT: Input Form ---- -->
+        <div class="col-lg-7">
+            <div class="card">
+                <div class="card-header"><i class="bi bi-sliders me-2"></i>Fund Analysis Setup</div>
+                <div class="card-body p-4">
+
+                    <!-- PDF Upload -->
+                    <div class="mb-4">
+                        <label class="form-label">Factsheet PDF <span class="text-muted">(optional)</span></label>
+                        <div class="upload-zone" id="uploadZone">
+                            <i class="bi bi-file-earmark-arrow-up d-block mb-2"></i>
+                            <div class="fw-600 mb-1">Drop a fund factsheet PDF here</div>
+                            <div class="text-muted" style="font-size:.78rem;">
+                                or <span style="color:#388BFD;cursor:pointer;"
+                                    onclick="document.getElementById('pdfInput').click()">browse to upload</span>
+                            </div>
+                            <input type="file" id="pdfInput" accept=".pdf" class="d-none" />
+                        </div>
+                        <div id="pdfStatus" class="mt-2"></div>
+                    </div>
+
+                    <!-- Main form -->
+                    <form id="analyzeForm">
+                        <input type="hidden" id="fileId" name="file_id" value="" />
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-sm-5">
+                                <label class="form-label">Fund / ETF Ticker *</label>
+                                <input type="text" id="ticker" name="ticker" class="form-control"
+                                    placeholder="e.g. BRK-B, FCNTX" required
+                                    style="text-transform:uppercase;font-family:monospace;font-size:.95rem;" />
+                                <div class="form-text">Yahoo Finance ticker symbol</div>
+                            </div>
+                            <div class="col-sm-7">
+                                <label class="form-label">Fund Name</label>
+                                <input type="text" id="fundName" name="fund_name" class="form-control"
+                                    placeholder="e.g. Berkshire Hathaway" />
+                            </div>
+                        </div>
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-sm-5">
+                                <label class="form-label">Asset Class</label>
+                                <select id="assetClass" name="asset_class" class="form-select">
+                                    <option value="equity">Equity (US)</option>
+                                    <option value="global equity">Equity (Global)</option>
+                                    <option value="bond">Fixed Income / Bond</option>
+                                    <option value="mixed">Balanced / Mixed</option>
+                                </select>
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label">Start Date</label>
+                                <input type="date" id="startDate" name="start" class="form-control"
+                                    value="2015-01-01" />
+                            </div>
+                            <div class="col-sm-3">
+                                <label class="form-label">End Date</label>
+                                <input type="date" id="endDate" name="end" class="form-control" value="2024-12-31" />
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary w-100 py-2" id="analyzeBtn">
+                            <i class="bi bi-cpu me-2"></i>Run Factor Analysis
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Analysis progress -->
+            <div id="progressCard" class="card mt-3 d-none">
+                <div class="card-body p-4 text-center">
+                    <div class="spinner-border text-primary mb-3" role="status"></div>
+                    <div class="fw-600 mb-1" id="progressTitle">Downloading price data…</div>
+                    <div class="text-muted" style="font-size:.8rem;" id="progressSub">
+                        This may take 15–30 seconds depending on date range.
+                    </div>
+                    <div class="progress mt-3" style="height:4px;background:var(--border);">
+                        <div id="progressBar" class="progress-bar bg-primary progress-bar-striped
+                                          progress-bar-animated" style="width:0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error display -->
+            <div id="errorCard" class="card mt-3 d-none" style="border-color:#F85149;">
+                <div class="card-body p-3">
+                    <div class="fw-600 text-danger mb-1"><i class="bi bi-exclamation-triangle me-2"></i>Analysis Error
+                    </div>
+                    <div id="errorMsg" class="text-muted" style="font-size:.85rem;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ---- RIGHT: Demo Presets + Info ---- -->
+        <div class="col-lg-5">
+
+            <!-- Demo presets -->
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-lightning me-2"></i>Demo Presets</div>
+                <div class="card-body p-3">
+                    <div class="text-muted mb-3" style="font-size:.78rem;">
+                        Classic funds from the AQR paper &amp; popular examples — run instantly.
+                    </div>
+                    {% for key, preset in demo_presets.items() %}
+                    <div class="d-flex align-items-start mb-3 pb-3" style="border-bottom:1px solid var(--border);" {% if
+                        loop.last %}style="border-bottom:none;" {% endif %}>
+                        <div class="flex-grow-1">
+                            <div class="fw-600 mb-1" style="font-size:.85rem;">{{ preset.name }}</div>
+                            <div class="text-muted mb-2" style="font-size:.76rem;line-height:1.5;">
+                                {{ preset.description }}
+                            </div>
+                            <div>
+                                <span class="badge rounded-pill" style="background:rgba(139,148,158,.1);
+                      color:var(--text-muted);font-size:.7rem;">
+                                    {{ preset.asset_class | title }}
+                                </span>
+                                <span class="badge rounded-pill ms-1" style="background:rgba(139,148,158,.1);
+                      color:var(--text-muted);font-size:.7rem;">
+                                    {{ preset.start[:4] }}–{{ preset.end[:4] }}
+                                </span>
+                            </div>
+                        </div>
+                        <button class="btn btn-outline-secondary btn-sm ms-3 demo-btn" data-key="{{ key }}">
+                            <i class="bi bi-play-fill"></i> Run
+                        </button>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- How it works -->
+            <div class="card">
+                <div class="card-header"><i class="bi bi-info-circle me-2"></i>How It Works</div>
+                <div class="card-body p-3" style="font-size:.8rem;line-height:1.7;color:var(--text-muted);">
+                    <ol class="mb-0 ps-3">
+                        <li class="mb-2">
+                            <strong style="color:var(--text-primary);">Upload &amp; Parse</strong> — FactorLens reads
+                            your
+                            fund factsheet PDF to extract the fund's investment style, geography, and
+                            asset class.
+                        </li>
+                        <li class="mb-2">
+                            <strong style="color:var(--text-primary);">Factor Decomposition</strong> — Daily fund
+                            returns
+                            are regressed against a curated set of factor ETFs
+                            (Value, Momentum, Quality, Low-Risk, Size) using rolling OLS.
+                        </li>
+                        <li class="mb-2">
+                            <strong style="color:var(--text-primary);">Investable Replication</strong> — Portfolio
+                            weights
+                            are solved via constrained optimisation to minimise tracking error
+                            while keeping weights long-only and summing to 100%.
+                        </li>
+                        <li class="mb-2">
+                            <strong style="color:var(--text-primary);">Quarterly Rebalancing</strong> — Weights are
+                            updated
+                            every quarter. You can see exactly what was bought, sold, or held.
+                        </li>
+                        <li>
+                            <strong style="color:var(--text-primary);">Performance Dashboard</strong> — Compare NAV,
+                            drawdown, Sharpe ratio, and correlation between the original fund
+                            and the factor replica.
+                        </li>
+                    </ol>
+                    <hr style="border-color:var(--border);" />
+                    <p class="mb-0">
+                        Methodology based on <em>Brooks, Tsuji &amp; Villalon (2019)</em>,
+                        <a href="https://www.aqr.com/Insights/Research/Journal-Article/Superstar-Investors"
+                            target="_blank" style="color:var(--accent-blue);">
+                            "Superstar Investors"
+                        </a>, Journal of Investing.
+                    </p>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+
+        // ---- PDF Upload ----
+        const zone = document.getElementById('uploadZone');
+        const input = document.getElementById('pdfInput');
+        const status = document.getElementById('pdfStatus');
+        const fileIdInput = document.getElementById('fileId');
+
+        ['dragover', 'dragenter'].forEach(e => zone.addEventListener(e, ev => {
+            ev.preventDefault(); zone.classList.add('drag-over');
+        }));
+        ['dragleave', 'drop'].forEach(e => zone.addEventListener(e, ev => {
+            ev.preventDefault(); zone.classList.remove('drag-over');
+        }));
+        zone.addEventListener('drop', ev => {
+            const file = ev.dataTransfer.files[0];
+            if (file) handlePDF(file);
+        });
+        input.addEventListener('change', () => { if (input.files[0]) handlePDF(input.files[0]); });
+
+        function handlePDF(file) {
+            if (!file.name.toLowerCase().endsWith('.pdf')) {
+                showStatus('danger', 'Please upload a PDF file.');
+                return;
+            }
+            showStatus('info', `<i class="bi bi-arrow-clockwise spin me-1"></i>Parsing ${file.name}…`);
+            const fd = new FormData();
+            fd.append('pdf', file);
+            fetch('/parse-pdf', { method: 'POST', body: fd })
+                .then(r => r.json())
+                .then(d => {
+                    if (d.error) { showStatus('danger', d.error); return; }
+
+                    fileIdInput.value = d.file_id || '';
+
+                    if (d.is_demo_paper) {
+                        showStatus('warning',
+                            `<i class="bi bi-info-circle me-1"></i><strong>Demo Paper Detected.</strong> ` +
+                            d.note + ` <br/>Use a Demo Preset on the right, or upload a real factsheet.`);
+                        return;
+                    }
+
+                    // Auto-fill form fields from parsed data
+                    if (d.fund_name && !document.getElementById('fundName').value)
+                        document.getElementById('fundName').value = d.fund_name.substring(0, 60);
+                    if (d.asset_class) {
+                        const sel = document.getElementById('assetClass');
+                        for (let o of sel.options) {
+                            if (o.value === d.asset_class || d.asset_class.includes(o.value)) {
+                                sel.value = o.value; break;
+                            }
+                        }
+                    }
+
+                    let msg = `<i class="bi bi-check-circle me-1"></i><strong>PDF parsed.</strong> `;
+                    if (d.isins && d.isins.length) msg += `ISIN: <code>${d.isins[0]}</code> · `;
+                    if (d.fund_name) msg += `Fund: <em>${d.fund_name.substring(0, 50)}</em> · `;
+                    msg += `Asset class inferred: <strong>${d.asset_class}</strong>`;
+                    if (d.strategies && d.strategies.length)
+                        msg += `<br/>Detected styles: ` + d.strategies.map(s =>
+                            `<span class="factor-pill">${s}</span>`).join(' ');
+                    if (!d.is_factsheet)
+                        msg += `<br/><span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>
+                    This PDF may not be a standard factsheet. Please check the inputs below.</span>`;
+
+                    showStatus('success', msg);
+                })
+                .catch(() => showStatus('danger', 'Upload failed. Please try again.'));
+        }
+
+        function showStatus(type, html) {
+            const colours = { info: '#388BFD', success: '#3FB950', warning: '#F0883E', danger: '#F85149' };
+            const bgColour = {
+                info: 'rgba(56,139,253,.1)', success: 'rgba(63,185,80,.1)',
+                warning: 'rgba(240,136,62,.1)', danger: 'rgba(248,81,73,.1)'
+            };
+            status.innerHTML = `<div style="background:${bgColour[type]};border:1px solid ${colours[type]}33;
+      border-radius:8px;padding:.75rem 1rem;font-size:.8rem;line-height:1.6;color:var(--text-primary);">
+      ${html}</div>`;
+        }
+
+        // ---- Main Analysis Form ----
+        const form = document.getElementById('analyzeForm');
+        const progCard = document.getElementById('progressCard');
+        const errCard = document.getElementById('errorCard');
+        const progBar = document.getElementById('progressBar');
+        const progTitle = document.getElementById('progressTitle');
+        const progSub = document.getElementById('progressSub');
+
+        const steps = [
+            [10, 'Downloading fund price data…'],
+            [30, 'Downloading factor ETF data…'],
+            [55, 'Running rolling OLS regression…'],
+            [75, 'Building replicating portfolio…'],
+            [90, 'Simulating performance & generating charts…'],
+            [98, 'Finalising results…'],
+        ];
+
+        form.addEventListener('submit', e => {
+            e.preventDefault();
+            runAnalysis({
+                ticker: document.getElementById('ticker').value.trim().toUpperCase(),
+                fund_name: document.getElementById('fundName').value.trim(),
+                asset_class: document.getElementById('assetClass').value,
+                start: document.getElementById('startDate').value,
+                end: document.getElementById('endDate').value,
+                file_id: fileIdInput.value,
+            });
+        });
+
+        // Demo buttons
+        document.querySelectorAll('.demo-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const key = btn.dataset.key;
+                progCard.classList.remove('d-none');
+                errCard.classList.add('d-none');
+                animateProgress();
+                fetch(`/demo/${key}`)
+                    .then(r => r.json())
+                    .then(handleResult)
+                    .catch(err => showError(err.message || 'Demo failed.'));
+            });
+        });
+
+        function runAnalysis(payload) {
+            progCard.classList.remove('d-none');
+            errCard.classList.add('d-none');
+            animateProgress();
+
+            fetch('/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            })
+                .then(r => r.json())
+                .then(handleResult)
+                .catch(err => showError(err.message || 'Request failed.'));
+        }
+
+        function handleResult(data) {
+            progBar.style.width = '100%';
+            if (data.error) {
+                progCard.classList.add('d-none');
+                showError(data.error);
+                return;
+            }
+            // Store result and redirect to results page
+            sessionStorage.setItem('factorLensResult', JSON.stringify(data));
+            if (data.job_id) {
+                window.location.href = `/results/${data.job_id}`;
+            }
+        }
+
+        function showError(msg) {
+            progCard.classList.add('d-none');
+            errCard.classList.remove('d-none');
+            document.getElementById('errorMsg').textContent = msg;
+        }
+
+        let stepIdx = 0;
+        function animateProgress() {
+            stepIdx = 0;
+            function next() {
+                if (stepIdx >= steps.length) return;
+                const [pct, title] = steps[stepIdx++];
+                progBar.style.width = pct + '%';
+                progTitle.textContent = title;
+                setTimeout(next, 2800);
+            }
+            next();
+        }
+    });
+</script>
+<style>
+    @keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .spin {
+        display: inline-block;
+        animation: spin .8s linear infinite;
+    }
+</style>
+{% endblock %}
