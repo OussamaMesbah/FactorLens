@@ -33,6 +33,11 @@ EQUITY_ETFS: dict[str, dict] = {
         "name": "MSCI Value Factor",
         "color": "#F4B942"
     },
+    "Growth": {
+        "ticker": "VUG",
+        "name": "Vanguard Growth ETF",
+        "color": "#FF9F40"
+    },
     "Size": {
         "ticker": "IWM",
         "name": "Russell 2000 (Small Cap)",
@@ -176,6 +181,7 @@ FACTOR_DESCRIPTIONS = {
     "Market": "Broad equity market exposure (market beta).",
     "Value":
     "Long cheap / short expensive stocks based on fundamentals (book-to-price, earnings yield).",
+    "Growth": "Long companies with high earnings/sales growth potential.",
     "Size": "Long small-cap / short large-cap stocks — the small-cap premium.",
     "Momentum":
     "Long recent winners / short recent losers — trend-following within equities.",
@@ -200,6 +206,8 @@ METHODOLOGY_CONTEXT: dict[str, str] = {
     "The primary driver of equity returns. Most legendary funds rely on a core market beta.",
     "Value":
     "The classic strategy of buying quality assets when they are undervalued by the market.",
+    "Growth":
+    "Focusing on companies expected to grow at an above-average rate compared to the market.",
     "Size":
     "Harvesting the premium associated with smaller, less liquid companies.",
     "Momentum":
@@ -371,11 +379,12 @@ def run_ols(fund_returns: pd.Series,
 
 def constrained_weights(fund_returns: pd.Series,
                         factor_returns: pd.DataFrame,
-                        max_leverage: float = 1.0) -> dict[str, float]:
+                        max_leverage: float = 1.0,
+                        long_only: bool = True) -> dict[str, float]:
     """
     Minimise tracking error between fund and replicating portfolio.
-    Weights are constrained to [0, max_leverage] and sum to total allocation.
-    We allow sum to be <= max_leverage.
+    If long_only=True: weights in [0, max_leverage] and sum to max_leverage.
+    If long_only=False: weights in [-max_leverage, max_leverage], net leverage = max_leverage.
     """
     y, X = _align(fund_returns, factor_returns)
     X_np = X.values
@@ -386,10 +395,15 @@ def constrained_weights(fund_returns: pd.Series,
         repl = X_np @ w
         return np.sum((y_np - repl)**2)
 
-    # Constraint: sum(weights) = max_leverage
-    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - max_leverage}]
-    bounds = [(0.0, max_leverage)] * n_factors
-    w0 = np.ones(n_factors) * (max_leverage / n_factors)
+    if long_only:
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - max_leverage}]
+        bounds = [(0.0, max_leverage)] * n_factors
+        w0 = np.ones(n_factors) * (max_leverage / n_factors)
+    else:
+        # Unconstrained (Long/Short) - net exposure is max_leverage
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - max_leverage}]
+        bounds = [(-max_leverage, max_leverage)] * n_factors
+        w0 = np.ones(n_factors) * (max_leverage / n_factors)
 
     res = minimize(tracking_error,
                    w0,
@@ -402,14 +416,15 @@ def constrained_weights(fund_returns: pd.Series,
                    })
     if res.success:
         return dict(zip(factor_returns.columns, res.x))
-    # Fallback: normalise positive OLS betas
+    
+    # Fallback to OLS betas
     ols = run_ols(fund_returns, factor_returns, add_intercept=False)
-    betas = np.array(
-        [ols["betas"].get(c, 0.0) for c in factor_returns.columns])
-    betas = np.clip(betas, 0, None)
-    total = betas.sum()
+    betas = np.array([ols["betas"].get(c, 0.0) for c in factor_returns.columns])
+    if long_only:
+        betas = np.clip(betas, 0, None)
+    total = np.abs(betas).sum()
     if total > 0:
-        betas = betas * (max_leverage / total)
+        betas = betas * (max_leverage / betas.sum())
     return dict(zip(factor_returns.columns, betas))
 
 
@@ -426,7 +441,8 @@ def rolling_regression(fund_returns: pd.Series,
                        factor_etf_returns: pd.DataFrame,
                        window_days: int = 252,
                        rebalance_freq: str = "QE",
-                       max_leverage: float = 1.0) -> pd.DataFrame:
+                       max_leverage: float = 1.0,
+                       long_only: bool = True) -> pd.DataFrame:
     """
     Compute constrained portfolio weights at each rebalancing date using a
     rolling window of `window_days` prior daily returns.
@@ -455,7 +471,7 @@ def rolling_regression(fund_returns: pd.Series,
         if len(y_window) < 60:
             continue
         try:
-            w = constrained_weights(y_window, X_window, max_leverage=max_leverage)
+            w = constrained_weights(y_window, X_window, max_leverage=max_leverage, long_only=long_only)
             w["date"] = rebal_date
             rows.append(w)
         except Exception:
@@ -530,7 +546,7 @@ def compute_rebalancing_events(weights_history: pd.DataFrame,
             delta = weight - prev_w
             threshold = 0.005  # 0.5% change threshold
             if prev_weights is None:
-                action = "BUY" if weight > threshold else "SKIP"
+                action = "BUY" if abs(weight) > threshold else "SKIP"
             elif delta > threshold:
                 action = "BUY"
             elif delta < -threshold:
@@ -538,7 +554,7 @@ def compute_rebalancing_events(weights_history: pd.DataFrame,
             else:
                 action = "HOLD"
 
-            if action != "SKIP" and (weight > 0.005 or action in ("SELL", )):
+            if action != "SKIP" and (abs(weight) > 0.005 or action in ("SELL", )):
                 event["holdings"].append({
                     "factor": factor,
                     "ticker": ticker,
@@ -630,6 +646,9 @@ def chart_factor_weights(weights_history: pd.DataFrame, etf_info: dict) -> str:
     if weights_history.empty:
         return "{}"
     fig = go.Figure()
+    # We use a standard area chart. If there are negative weights, 
+    # stacked area chart might behave weirdly. 
+    # For simplicity, we keep stacking but it might look off for L/S.
     for factor in weights_history.columns:
         info = etf_info.get(factor, {"name": factor, "color": "#888"})
         fig.add_trace(
@@ -645,7 +664,7 @@ def chart_factor_weights(weights_history: pd.DataFrame, etf_info: dict) -> str:
             ))
     fig.update_layout(**PLOTLY_LAYOUT,
                       title="Factor Weights Over Time (%)",
-                      yaxis=dict(title="Allocation (%)", range=[0, 105]),
+                      yaxis=dict(title="Allocation (%)"),
                       xaxis_title="")
     return fig.to_json()
 
@@ -747,7 +766,8 @@ def run_full_analysis(fund_ticker: str,
                       rebal_freq: str = "QE",
                       window_days: int = 252,
                       resample_freq: str = "ME",
-                      max_leverage: float = 1.0) -> dict:
+                      max_leverage: float = 1.0,
+                      long_only: bool = True) -> dict:
     """
     Run the complete factor replication analysis.
     Returns a dict holding all results, metrics, and chart JSON.
@@ -823,7 +843,8 @@ def run_full_analysis(fund_ticker: str,
                                          factor_returns,
                                          window_days=window_days,
                                          rebalance_freq=rebal_freq,
-                                         max_leverage=max_leverage)
+                                         max_leverage=max_leverage,
+                                         long_only=long_only)
 
     # ---- 6. Simulate replicating portfolio ----
     # Map factor names back to tickers for simulate_portfolio
@@ -876,7 +897,7 @@ def run_full_analysis(fund_ticker: str,
         "description": FACTOR_DESCRIPTIONS.get(k, ""),
         "methodology_context": METHODOLOGY_CONTEXT.get(k, ""),
     } for k, v in sorted(latest_weights.items(), key=lambda x: -x[1])
-                       if v > 0.005]
+                       if abs(v) > 0.005]
 
     return {
         "fund_name": fund_name,
@@ -915,6 +936,7 @@ def run_full_analysis(fund_ticker: str,
         "methodology": {
             "frequency": "Monthly" if resample_freq else "Daily",
             "excess_returns": "Yes (Risk-Free adjusted)",
-            "max_leverage": max_leverage
+            "max_leverage": max_leverage,
+            "long_only": long_only
         }
     }

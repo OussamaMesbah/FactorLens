@@ -29,7 +29,10 @@ with st.sidebar:
     start_date = col1.date_input("Start Date", value=pd.to_datetime("2015-01-01"))
     end_date = col2.date_input("End Date", value=pd.to_datetime("2024-12-31"))
     
-    max_leverage = st.slider("Max Leverage", 1.0, 3.0, 1.0, 0.1)
+    st.markdown("---")
+    st.subheader("Model Parameters")
+    max_leverage = st.slider("Max Leverage", 1.0, 3.0, 1.0, 0.1, help="Target total exposure. Legends like Buffett often use ~1.7x.")
+    long_only = st.checkbox("Long-Only Constraints", value=True, help="If unchecked, allows shorting factors to match fund profile (e.g. 'Junk' bets).")
     resample_freq = st.selectbox("Regression Frequency", options=["Monthly (Recommended)", "Daily"], index=0)
     freq_code = "ME" if "Monthly" in resample_freq else None
 
@@ -60,7 +63,8 @@ if st.button("Run Factor Analysis"):
                     end=end_date.strftime("%Y-%m-%d"),
                     asset_class=asset_class,
                     resample_freq=freq_code,
-                    max_leverage=max_leverage
+                    max_leverage=max_leverage,
+                    long_only=long_only
                 )
                 
                 # --- Helper to parse JSON charts ---
@@ -73,9 +77,22 @@ if st.button("Run Factor Analysis"):
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Ann. Return", f"{results['fund_metrics']['ann_return']}%")
                 m2.metric("Sharpe Ratio", results['fund_metrics']['sharpe'])
-                m3.metric("R-Squared", f"{results['full_ols']['r_squared']*100:.1f}%")
-                m4.metric("Alpha (Ann.)", f"{results['full_ols']['alpha']}%")
                 
+                r2_val = results['full_ols']['r_squared']
+                m3.metric("R-Squared (Fit)", f"{r2_val*100:.1f}%", 
+                          help="Percentage of returns explained by systematic factors. >80% is high.")
+                
+                m4.metric("Alpha (Ann.)", f"{results['full_ols']['alpha']}%",
+                          help="Return not explained by factors. Represents manager skill, luck, or idiosyncratic risk.")
+                
+                # R-Squared Explanation
+                if r2_val > 0.8:
+                    st.success(f"**High Fit ({r2_val*100:.1f}%)**: This fund is largely a 'closet indexer' or a combination of systematic styles. Its performance is highly predictable using these factors.")
+                elif r2_val > 0.5:
+                    st.info(f"**Moderate Fit ({r2_val*100:.1f}%)**: Factors explain a good portion of returns, but the manager is making significant unique bets.")
+                else:
+                    st.warning(f"**Low Fit ({r2_val*100:.1f}%)**: This fund is 'idiosyncratic'. The factors do not explain its performance well. This could be due to high concentration (e.g. Tesla in ARKK) or a unique strategy not captured by these ETFs.")
+
                 # 2. Charts
                 st.subheader("Performance vs. Factor Clone")
                 st.plotly_chart(get_fig(results['charts']['performance']), use_container_width=True)
@@ -91,13 +108,28 @@ if st.button("Run Factor Analysis"):
                 st.subheader("Risk Analysis")
                 st.plotly_chart(get_fig(results['charts']['drawdown']), use_container_width=True)
                 
-                # 3. Tables
-                with st.expander("View Regression Statistics"):
-                    st.table(pd.DataFrame({
-                        "Beta": results['full_ols']['betas'],
-                        "T-Stat": results['full_ols']['t_stats'],
-                        "P-Value": results['full_ols']['p_values']
-                    }))
+                # 3. Tables & Methodology
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    with st.expander("Detailed Regression Statistics"):
+                        st.table(pd.DataFrame({
+                            "Beta": results['full_ols']['betas'],
+                            "T-Stat": results['full_ols']['t_stats'],
+                            "P-Value": results['full_ols']['p_values']
+                        }))
+                
+                with col_b:
+                    with st.expander("Methodology & Limitations"):
+                        st.markdown(f"""
+                        - **Frequency:** {results['methodology']['frequency']}
+                        - **Constraint:** {"Long-Only" if long_only else "Long/Short"}
+                        - **Leverage:** {max_leverage}x
+                        
+                        **Why doesn't it follow the curve perfectly?**
+                        1. **Concentration:** Concentrated funds (like ARKK) have high stock-specific risk that broad factors can't track.
+                        2. **ETF Proxies:** We use long-only ETFs (like `VLUE`). Pure academic factors are Long/Short.
+                        3. **Transaction Costs:** Real funds pay to trade; our clone is friction-less.
+                        """)
                     
             except Exception as e:
                 st.error(f"Analysis failed: {e}")
